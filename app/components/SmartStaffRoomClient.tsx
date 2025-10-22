@@ -153,6 +153,8 @@ const SmartStaffRoomClient = () => {
       
       {/* Department */}
       <div className="text-black text-xs mb-3 truncate font-bold opacity-70">{staffMember.department}</div>
+  {/* Location on card */}
+  <div className="text-black text-xs mb-3 truncate font-bold opacity-90">{staffMember.location}</div>
       
       {/* Status Badge */}
       <div className={`${getStatusBadge(staffMember.status)} border-2 text-xs px-3 py-1.5 rounded-lg text-center font-black tracking-wide`}>
@@ -397,36 +399,7 @@ const SmartStaffRoomClient = () => {
             </div>
 
             <div className="space-y-3">
-              <button
-                onClick={() => {
-                  handleCheckIn(selectedStaff.id);
-                  setSelectedStaff(null);
-                }}
-                className="w-full bg-green-400 border-4 border-black text-black px-6 py-3 rounded-xl font-black hover:bg-green-500 transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] hover:translate-x-[-2px] hover:translate-y-[-2px] uppercase"
-              >
-                Mark In Room
-              </button>
-              <button
-                onClick={() => {
-                  // Open the destination modal so user can pick from predefined places
-                  setDestinationModal({ staff: selectedStaff, open: true });
-                }}
-                className="w-full bg-red-400 border-4 border-black text-black px-6 py-3 rounded-xl font-black hover:bg-red-500 transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] hover:translate-x-[-2px] hover:translate-y-[-2px] uppercase"
-              >
-                Mark Out
-              </button>
-              <button
-                onClick={() => {
-                  const classroom = prompt('Enter classroom/location:', 'Room 301');
-                  if (classroom) {
-                    handleInClass(selectedStaff.id, classroom);
-                    setSelectedStaff(null);
-                  }
-                }}
-                className="w-full bg-yellow-400 border-4 border-black text-black px-6 py-3 rounded-xl font-black hover:bg-yellow-500 transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] hover:translate-x-[-2px] hover:translate-y-[-2px] uppercase"
-              >
-                Mark In Class
-              </button>
+              {/* Read-only detail modal: removed edit controls per request */}
               <button
                 onClick={() => setSelectedStaff(null)}
                 className="w-full bg-gray-300 border-4 border-black text-black px-6 py-3 rounded-xl font-black hover:bg-gray-400 transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] hover:translate-x-[-2px] hover:translate-y-[-2px] uppercase"
