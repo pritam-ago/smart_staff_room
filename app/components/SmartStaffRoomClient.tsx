@@ -41,6 +41,19 @@ const SmartStaffRoomClient = () => {
     })();
   }, []);
 
+  // helper to refresh staff list from server
+  async function refreshStaff() {
+    try {
+      const res = await fetch('/api/staff');
+      if (res.ok) {
+        const data = await res.json();
+        setStaff(data || []);
+      }
+    } catch (e) {
+      console.warn('Failed to refresh staff', e);
+    }
+  }
+
   const stats = {
     total: staff.length,
     in: staff.filter(s => s.status === 'in').length,
@@ -77,11 +90,20 @@ const SmartStaffRoomClient = () => {
   };
 
   const handleCheckIn = (staffId: number) => {
-    setStaff(prev => prev.map(s => 
-      s.id === staffId 
-        ? { ...s, status: 'in', location: 'Staff Room', lastSeen: new Date().toISOString() }
-        : s
-    ));
+    // update server if staff has an id
+    (async () => {
+      try {
+        await fetch('/api/staff', { method: 'PUT', body: JSON.stringify({ id: staffId, status: 'in', location: 'Staff Room' }), headers: { 'Content-Type': 'application/json' } });
+        await refreshStaff();
+      } catch (e) {
+        // fallback to local update
+        setStaff(prev => prev.map(s => 
+          s.id === staffId 
+            ? { ...s, status: 'in', location: 'Staff Room', lastSeen: new Date().toISOString() }
+            : s
+        ));
+      }
+    })();
   };
 
   const handleCheckOut = (staffId: number, location: string) => {
@@ -486,11 +508,19 @@ const SmartStaffRoomClient = () => {
             <div className="flex gap-4">
               <button
                 onClick={() => {
-                  const sel = (document.getElementById('destination-select') as HTMLSelectElement);
-                  const location = sel?.value || PLACES[0];
-                  handleCheckOut(destinationModal.staff.id, location);
-                  setDestinationModal(null);
-                  setSelectedStaff(null);
+                  (async () => {
+                    const sel = (document.getElementById('destination-select') as HTMLSelectElement);
+                    const location = sel?.value || PLACES[0];
+                    try {
+                      await fetch('/api/staff', { method: 'PUT', body: JSON.stringify({ id: destinationModal.staff.id, status: 'out', location }), headers: { 'Content-Type': 'application/json' } });
+                      showToast('Marked out', 'success');
+                      setDestinationModal(null);
+                      setSelectedStaff(null);
+                      await refreshStaff();
+                    } catch (e) {
+                      showToast('Failed to mark out', 'error');
+                    }
+                  })();
                 }}
                 className="flex-1 bg-red-400 border-4 border-black text-black px-8 py-4 rounded-xl font-black hover:bg-red-500 transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] hover:translate-x-[-2px] hover:translate-y-[-2px] text-lg uppercase"
               >
