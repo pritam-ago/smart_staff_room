@@ -8,12 +8,13 @@ datasource db {
 }
 
 model Staff {
-    id         Int      @id @default(autoincrement())
-    name       String
-    seatCode   String   @unique
-    status     String   @default("out")
-    location   String?
-    lastSeen   DateTime @default(now())
-    faceId     String?  @unique
-    department String?
+    id             Int      @id @default(autoincrement())
+    name           String
+    seatCode       String   @unique
+    status         String   @default("out")
+    location       String?
+    lastSeen       DateTime @default(now())
+    faceId         String?  @unique
+    faceDescriptor Json?
+    department     String?
 }

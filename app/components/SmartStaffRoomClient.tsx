@@ -1,33 +1,44 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from 'react';
+// face-api is a browser-only lib; dynamically import to avoid SSR issues
+let faceapi: any = null;
 import { Camera } from 'lucide-react';
 
-// Mock database - 10 staff members only
-const initialStaff = [
-  { id: 1, name: 'Dr. Smith', seatCode: 'A1', status: 'in', location: 'Staff Room', lastSeen: new Date().toISOString(), faceId: 'face_001', department: 'Computer Science' },
-  { id: 2, name: 'Prof. Johnson', seatCode: 'A2', status: 'out', location: 'Meeting', lastSeen: new Date().toISOString(), faceId: 'face_002', department: 'Mathematics' },
-  { id: 3, name: 'Dr. Williams', seatCode: 'A3', status: 'class', location: 'Room 301', lastSeen: new Date().toISOString(), faceId: 'face_003', department: 'Physics' },
-  { id: 4, name: 'Prof. Brown', seatCode: 'A4', status: 'in', location: 'Staff Room', lastSeen: new Date().toISOString(), faceId: 'face_004', department: 'Chemistry' },
-  { id: 5, name: 'Dr. Davis', seatCode: 'A5', status: 'out', location: 'Library', lastSeen: new Date().toISOString(), faceId: 'face_005', department: 'Biology' },
-  { id: 6, name: 'Prof. Miller', seatCode: 'B1', status: 'in', location: 'Staff Room', lastSeen: new Date().toISOString(), faceId: 'face_006', department: 'English' },
-  { id: 7, name: 'Dr. Wilson', seatCode: 'B2', status: 'class', location: 'Lab 2B', lastSeen: new Date().toISOString(), faceId: 'face_007', department: 'Mechanical' },
-  { id: 8, name: 'Prof. Moore', seatCode: 'B3', status: 'in', location: 'Staff Room', lastSeen: new Date().toISOString(), faceId: 'face_008', department: 'Electronics' },
-  { id: 9, name: 'Dr. Taylor', seatCode: 'B4', status: 'out', location: 'Conference', lastSeen: new Date().toISOString(), faceId: 'face_009', department: 'Civil' },
-  { id: 10, name: 'Prof. Anderson', seatCode: 'B5', status: 'in', location: 'Staff Room', lastSeen: new Date().toISOString(), faceId: 'face_010', department: 'Economics' },
-];
+// staff will be loaded from backend
+const initialStaff = [] as any[];
 
 const SmartStaffRoomClient = () => {
   const [staff, setStaff] = useState(initialStaff);
   const [showCamera, setShowCamera] = useState(false);
   const [selectedStaff, setSelectedStaff] = useState<any>(null);
   const [destinationModal, setDestinationModal] = useState<{staff:any, open:boolean} | null>(null);
-  const [currentTime, setCurrentTime] = useState(new Date());
+  const [classroomModal, setClassroomModal] = useState<{ open: boolean; staff?: any } | null>(null);
+  const [currentTime, setCurrentTime] = useState<Date | null>(null);
   const videoRef = useRef<any>(null);
+  const [toast, setToast] = useState<{ text: string; type?: 'info'|'error'|'success'; visible: boolean }>({ text: '', type: 'info', visible: false });
+  const [registerModal, setRegisterModal] = useState<{ open: boolean; descriptor?: number[] | null }>({ open: false, descriptor: null });
 
   useEffect(() => {
+    // set time only on client to avoid SSR/CSR mismatch
+    setCurrentTime(new Date());
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     return () => clearInterval(timer);
+  }, []);
+
+  // fetch staff from backend
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/api/staff');
+        if (res.ok) {
+          const data = await res.json();
+          setStaff(data || []);
+        }
+      } catch (e) {
+        console.warn('Failed to fetch staff', e);
+      }
+    })();
   }, []);
 
   const stats = {
@@ -92,18 +103,30 @@ const SmartStaffRoomClient = () => {
   const startCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
+      // show modal first so the video element is mounted
       setShowCamera(true);
+      // wait a tick for the video element to mount
+      await new Promise((res) => setTimeout(res, 60));
+      if (videoRef.current) {
+        try {
+          videoRef.current.srcObject = stream;
+          // many browsers require muted to autoplay
+          videoRef.current.muted = true;
+          await videoRef.current.play();
+        } catch (e) {
+          // ignore play errors
+        }
+      }
     } catch (err) {
-      alert('Camera access denied. Please allow camera access for face recognition.');
+      showToast('Camera access denied. Please allow camera access for face recognition.', 'error');
     }
   };
 
   const stopCamera = () => {
     if (videoRef.current && videoRef.current.srcObject) {
-      videoRef.current.srcObject.getTracks().forEach((track: any) => track.stop());
+      const tracks = videoRef.current.srcObject.getTracks();
+      tracks.forEach((track: any) => track.stop());
+      try { videoRef.current.srcObject = null; } catch {}
     }
     setShowCamera(false);
   };
@@ -118,18 +141,143 @@ const SmartStaffRoomClient = () => {
   ];
 
   const simulateRecognition = () => {
-    const randomStaff = staff[Math.floor(Math.random() * staff.length)];
-    // Instead of immediately prompting, auto-check current status and act accordingly
-    alert(`✓ Face recognized: ${randomStaff.name}`);
-    if (randomStaff.status === 'in') {
-      // If currently in, open destination modal to mark out with chosen place
-      setDestinationModal({ staff: randomStaff, open: true });
-    } else {
-      // If not in, mark them in immediately
-      handleCheckIn(randomStaff.id);
-    }
-    stopCamera();
+    // perform actual face detection + descriptor generation using face-api
+    (async () => {
+      try {
+        if (!faceapi) {
+          faceapi = await import('face-api.js');
+        }
+        if (!videoRef.current) { showToast('No video element', 'error'); return; }
+
+        // capture a frame to canvas
+        const video: HTMLVideoElement = videoRef.current;
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 480;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) { showToast('Failed to capture frame', 'error'); return; }
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+  // use the tiny face detector options since we loaded tinyFaceDetector model
+  const options = new faceapi.TinyFaceDetectorOptions();
+  const detections = await faceapi.detectSingleFace(canvas, options).withFaceLandmarks().withFaceDescriptor();
+        if (!detections) {
+          showToast('No face detected. Please try again.', 'error');
+          return;
+        }
+
+        const descriptor = Array.from(detections.descriptor as Float32Array);
+
+        // call backend recognize
+        const res = await fetch('/api/staff/recognize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ descriptor }),
+        });
+        const j = await res.json();
+        if (j.match) {
+          const matched = j.match as any;
+          showToast(`Face matched: ${matched.name}`, 'success');
+          const status = (matched.status || '').toString().toLowerCase();
+          if (status === 'in') {
+            // open destination modal so user can pick where they're going
+            setDestinationModal({ staff: matched, open: true });
+          } else {
+            handleCheckIn(matched.id);
+          }
+        } else {
+          // not recognized - open register modal with descriptor
+          setRegisterModal({ open: true, descriptor });
+        }
+      } catch (e: any) {
+        console.error(e);
+        showToast('Face recognition failed: ' + (e?.message || e), 'error');
+      } finally {
+        stopCamera();
+      }
+    })();
   };
+
+  useEffect(() => {
+    (async () => {
+      try {
+        faceapi = await import('face-api.js');
+        const MODEL_URL = '/models';
+        await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+        await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
+        await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL);
+        console.log('face-api models loaded');
+      } catch (e) {
+        console.warn('Failed to load face-api models', e);
+      }
+    })();
+  }, []);
+
+  function showToast(text: string, type: 'info'|'error'|'success' = 'info') {
+    setToast({ text, type, visible: true });
+    setTimeout(() => setToast(t => ({ ...t, visible: false })), 3000);
+  }
+
+  const RegisterModal = ({ open, descriptor, onClose }: { open: boolean; descriptor?: number[] | null; onClose: (added?: any) => void }) => {
+    const [name, setName] = useState('');
+    const [seatCode, setSeatCode] = useState('');
+    const [department, setDepartment] = useState('');
+
+    useEffect(() => {
+      if (!open) { setName(''); setSeatCode(''); setDepartment(''); }
+    }, [open]);
+
+    if (!open) return null;
+    return (
+      <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-6">
+        <div className="bg-white border-4 border-black rounded-2xl p-6 max-w-md w-full">
+          <h3 className="text-2xl font-black mb-2">Register New Staff</h3>
+          <div className="space-y-3">
+            <input className="w-full p-2 border-2 border-black" placeholder="Name" value={name} onChange={e => setName(e.target.value)} />
+            <input className="w-full p-2 border-2 border-black" placeholder="Seat Code" value={seatCode} onChange={e => setSeatCode(e.target.value)} />
+            <input className="w-full p-2 border-2 border-black" placeholder="Department" value={department} onChange={e => setDepartment(e.target.value)} />
+            <div className="flex gap-3 mt-2">
+              <button className="flex-1 bg-black text-white px-4 py-2 font-black" onClick={async () => {
+                if (!name || !seatCode) { showToast('Name and seat required', 'error'); return; }
+                try {
+                  const res = await fetch('/api/staff/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, seatCode, department, faceDescriptor: descriptor }) });
+                  const created = await res.json();
+                  if (created && created.id) {
+                    showToast('Registered ' + created.name, 'success');
+                    setStaff(prev => [...prev, created]);
+                    onClose(created);
+                    return;
+                  }
+                  showToast('Registration failed', 'error');
+                } catch (e) { showToast('Registration failed', 'error'); }
+              }}>Register</button>
+              <button className="flex-1 bg-gray-300 border-2 border-black px-4 py-2 font-black" onClick={() => onClose()}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const ClassroomModal = ({ open, staffObj, onClose }: { open: boolean; staffObj?: any; onClose: (updated?: any) => void }) => {
+    const [classroom, setClassroom] = useState('');
+    if (!open) return null;
+    return (
+      <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-60 p-6">
+        <div className="bg-white border-4 border-black rounded-2xl p-6 max-w-md w-full">
+          <h3 className="text-2xl font-black mb-2">Mark In Class</h3>
+          <input className="w-full p-2 border-2 border-black mb-4" placeholder="Classroom / Location" value={classroom} onChange={e => setClassroom(e.target.value)} />
+          <div className="flex gap-3">
+            <button className="flex-1 bg-green-400 border-4 border-black px-4 py-2 font-black" onClick={() => {
+              if (!staffObj) return; if (!classroom) return; handleInClass(staffObj.id, classroom); onClose(staffObj);
+            }}>Confirm</button>
+            <button className="flex-1 bg-gray-300 border-2 border-black px-4 py-2 font-black" onClick={() => onClose()}>Cancel</button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
 
   const Seat = ({ staffMember }: { staffMember: any }) => (
     <div
@@ -177,7 +325,7 @@ const SmartStaffRoomClient = () => {
             </div>
             <div className="flex items-center gap-4">
               <div className="bg-black text-yellow-400 px-6 py-3 rounded-xl border-2 border-black font-mono font-bold text-lg">
-                {currentTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                {currentTime ? currentTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '--:--:--'}
               </div>
               <button
                 onClick={startCamera}
@@ -241,7 +389,7 @@ const SmartStaffRoomClient = () => {
               </div>
               <div className="grid grid-cols-1 gap-4">
                 {staff.filter(s => s.seatCode.startsWith('A')).map(s => (
-                  <Seat key={s.id} staffMember={s} />
+                  <Seat key={`${s.seatCode}-${s.id}`} staffMember={s} />
                 ))}
               </div>
             </div>
@@ -253,7 +401,7 @@ const SmartStaffRoomClient = () => {
               </div>
               <div className="grid grid-cols-1 gap-4">
                 {staff.filter(s => s.seatCode.startsWith('B')).map(s => (
-                  <Seat key={s.id} staffMember={s} />
+                  <Seat key={`${s.seatCode}-${s.id}`} staffMember={s} />
                 ))}
               </div>
             </div>
@@ -315,7 +463,7 @@ const SmartStaffRoomClient = () => {
 
       {/* Destination Modal (on scan when staff is currently 'in') */}
       {destinationModal && destinationModal.open && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-6">
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-60 p-6">
           <div className="bg-white border-4 border-black rounded-2xl shadow-[12px_12px_0px_0px_rgba(0,0,0,1)] p-8 max-w-lg w-full">
             <div className="bg-yellow-400 border-4 border-black rounded-xl p-4 mb-6">
               <h2 className="text-3xl font-black text-black uppercase tracking-tight">Marking Out</h2>
@@ -363,9 +511,12 @@ const SmartStaffRoomClient = () => {
       {selectedStaff && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-6">
           <div className="bg-white border-4 border-black rounded-2xl shadow-[12px_12px_0px_0px_rgba(0,0,0,1)] p-8 max-w-lg w-full">
-            <div className="bg-yellow-400 border-4 border-black rounded-xl p-4 mb-6">
+            <div className="relative">
+              <button onClick={() => setSelectedStaff(null)} className="absolute -right-4 -top-4 bg-black text-white rounded-full w-10 h-10 flex items-center justify-center border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">✕</button>
+              <div className="bg-yellow-400 border-4 border-black rounded-xl p-4 mb-6">
               <h2 className="text-3xl font-black text-black uppercase tracking-tight">{selectedStaff.name}</h2>
               <p className="text-black text-sm font-bold">{selectedStaff.department}</p>
+              </div>
             </div>
             
             <div className="space-y-4 mb-8">
@@ -399,13 +550,46 @@ const SmartStaffRoomClient = () => {
             </div>
 
             <div className="space-y-3">
-              {/* Read-only detail modal: removed edit controls per request */}
-              <button
-                onClick={() => setSelectedStaff(null)}
-                className="w-full bg-gray-300 border-4 border-black text-black px-6 py-3 rounded-xl font-black hover:bg-gray-400 transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] hover:translate-x-[-2px] hover:translate-y-[-2px] uppercase"
-              >
-                Close
-              </button>
+              {selectedStaff.status === 'in' ? (
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => {
+                      // open destination modal to pick where they're going
+                      setDestinationModal({ staff: selectedStaff, open: true });
+                    }}
+                    className="flex-1 bg-red-400 border-4 border-black text-black px-6 py-3 rounded-xl font-black hover:bg-red-500 transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] uppercase"
+                  >
+                    Mark Out
+                  </button>
+                  <button
+                    onClick={() => setSelectedStaff(null)}
+                    className="flex-1 bg-gray-300 border-4 border-black text-black px-6 py-3 rounded-xl font-black hover:bg-gray-400 transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] uppercase"
+                  >
+                    Close
+                  </button>
+                </div>
+              ) : (
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => {
+                      handleCheckIn(selectedStaff.id);
+                      setSelectedStaff(null);
+                    }}
+                    className="flex-1 bg-green-400 border-4 border-black text-black px-6 py-3 rounded-xl font-black hover:bg-green-500 transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] uppercase"
+                  >
+                    Mark In
+                  </button>
+                  <button
+                    onClick={() => {
+                      // open classroom modal to enter classroom
+                      setClassroomModal({ open: true, staff: selectedStaff });
+                    }}
+                    className="flex-1 bg-yellow-400 border-4 border-black text-black px-6 py-3 rounded-xl font-black hover:bg-yellow-500 transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] uppercase"
+                  >
+                    Mark In Class
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>
